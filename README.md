@@ -1,5 +1,7 @@
 # Citymath
 
+**Live site: https://corychainsman.github.io/citymath/**
+
 Mobile-first interactive comparison of US city populations. Pick a target city, stack other cities together, and see how they measure up.
 
 All choices are stored in the URL — share a link to share a comparison:
@@ -32,7 +34,7 @@ This repo ships with a workflow at `.github/workflows/deploy.yml` that builds an
 
 1. Push the repo to GitHub.
 2. In the repo, go to **Settings → Pages → Build and deployment → Source** and select **GitHub Actions**.
-3. Push to `main` (or run the workflow from the Actions tab). Site goes live at `https://<username>.github.io/<repo-name>/`.
+3. Push to `main` (or run the workflow from the Actions tab). Site goes live at `https://corychainsman.github.io/citymath/`.
 
 ### Option B — Vercel or Netlify
 
