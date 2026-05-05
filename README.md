@@ -2,12 +2,12 @@
 
 **Live site: https://corychainsman.github.io/citymath/**
 
-Mobile-first interactive comparison of US city populations. Pick a target city, stack other cities together, and see how they measure up.
+Mobile-first interactive comparison of US city populations. Add cities to unnamed stacks and compare the stack totals on a shared horizontal scale.
 
-All choices are stored in the URL — share a link to share a comparison:
+Stack choices are stored in the URL — share a link to share a comparison:
 
 ```
-/?target=new-york&stack=los-angeles,houston
+/?stacks=new-york,philadelphia,boston;los-angeles,san-diego,san-jose
 ```
 
 ## Run locally
@@ -48,14 +48,15 @@ Connect the repo on either platform — both auto-detect Vite. No config require
 
 | Param    | Format                          | Example                          |
 | -------- | ------------------------------- | -------------------------------- |
-| `target` | One city slug                   | `target=new-york`                |
-| `stack`  | Comma-separated list of slugs   | `stack=los-angeles,houston,boston` |
+| `stacks` | Semicolon-separated stacks, each with comma-separated city slugs | `stacks=new-york,boston;houston,austin` |
 
 Slugs are the city name, lowercased, with spaces replaced by hyphens (e.g., `oklahoma-city`, `san-francisco`). Unknown slugs are silently dropped.
 
+Legacy `target` and `stack` links are still accepted and converted into the new stack format.
+
 ## Stack
 
-Vite · React 18 · Fraunces & IBM Plex (Google Fonts). No CSS framework — inline styles + a custom palette.
+Vite · React 18 · Inter & IBM Plex Mono (Google Fonts). No CSS framework — CSS is kept in `src/App.jsx` with a custom palette.
 
 ## Data
 

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /* ---------- DATA ---------- */
 const RAW_CITIES = [
@@ -34,1000 +34,1337 @@ const RAW_CITIES = [
   { rank: 30, name: "Baltimore", state: "MD", pop: 568271 },
 ];
 
+const CITY_COLORS = [
+  "#0F3B78",
+  "#248C8C",
+  "#59A64A",
+  "#F46B2F",
+  "#F4A51C",
+  "#7650C7",
+  "#8B5CC7",
+  "#8C6DC5",
+  "#4F77B8",
+  "#6AA5D8",
+  "#4FB1B5",
+  "#8D97B5",
+  "#63B7B7",
+  "#B0B7C9",
+  "#AEB6CA",
+  "#95A0BB",
+];
+
+const STACK_COLORS = ["#0F3B78", "#248C8C", "#59A64A", "#F4A51C", "#7650C7"];
+
 const slugify = (s) =>
   s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 
-const CITIES = RAW_CITIES.map((c) => ({ ...c, slug: slugify(c.name) }));
-const BY_SLUG = Object.fromEntries(CITIES.map((c) => [c.slug, c]));
-const BY_RANK = Object.fromEntries(CITIES.map((c) => [c.rank, c]));
+const CITIES = RAW_CITIES.map((city, index) => ({
+  ...city,
+  slug: slugify(city.name),
+  color: CITY_COLORS[index % CITY_COLORS.length],
+}));
+const BY_SLUG = Object.fromEntries(CITIES.map((city) => [city.slug, city]));
+const BY_RANK = Object.fromEntries(CITIES.map((city) => [city.rank, city]));
+const DEFAULT_STACKS = [
+  { id: "stack-1", color: STACK_COLORS[0], items: [1, 6, 25] },
+  { id: "stack-2", color: STACK_COLORS[1], items: [2, 8, 12] },
+  { id: "stack-3", color: STACK_COLORS[2], items: [4, 7, 13] },
+  { id: "stack-4", color: STACK_COLORS[3], items: [3, 15] },
+  { id: "stack-5", color: STACK_COLORS[4], items: [5] },
+];
 
-/* ---------- PALETTE ---------- */
+/* ---------- THEME ---------- */
 const C = {
-  bg: "#F4F6F0",
-  panel: "#FFFDF7",
-  paper: "#FFFFFF",
-  ink: "#1A201D",
-  muted: "#66706A",
-  rule: "#D3DDD2",
-  ruleSoft: "#E6EDE4",
-  target: "#164D7A",
-  stack: "#C84D2B",
-  pos: "#1F6B4A",
-  neg: "#A23B31",
-  trackFill: "#AEBDAF",
-  focus: "#79A7C7",
+  bg: "#F7F8FB",
+  panel: "#FFFFFF",
+  ink: "#0B1020",
+  muted: "#596174",
+  faint: "#A9B0C1",
+  line: "rgba(15, 23, 42, 0.10)",
+  lineSoft: "rgba(15, 23, 42, 0.06)",
+  blue: "#0F3B78",
+  action: "#1769E0",
+  focus: "#1C7DFF",
 };
 
 /* ---------- FORMAT ---------- */
-const fmt = (n) => n.toLocaleString("en-US");
-const fmtCompact = (n) => {
-  const a = Math.abs(n);
-  if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
-  if (a >= 1e3) return Math.round(n / 1e3) + "K";
-  return String(n);
-};
+const fmtCompact = (n, digits = 1) => `${(n / 1_000_000).toFixed(digits)}M`;
+const fmtStack = (n) => `${(n / 1_000_000).toFixed(1)}M`;
+const cloneStacks = (stacks) =>
+  stacks.map((stack) => ({ ...stack, items: [...stack.items] }));
 
-/* ---------- URL ↔ STATE ---------- */
-const DEMO = { target: 1, stack: [2, 4] };
+/* ---------- URL STATE ---------- */
+function readStacksState() {
+  if (typeof window === "undefined") return cloneStacks(DEFAULT_STACKS);
 
-function readUrlState() {
-  if (typeof window === "undefined") return DEMO;
-  const p = new URLSearchParams(window.location.search);
-  if (!p.has("target") && !p.has("stack")) return DEMO;
-  const tParam = p.get("target");
-  const sParam = p.get("stack");
-  const target = tParam ? BY_SLUG[tParam]?.rank ?? null : null;
-  const stack = sParam
-    ? sParam
-        .split(",")
-        .map((x) => BY_SLUG[x.trim()]?.rank)
-        .filter(Boolean)
-    : [];
-  return { target, stack };
+  const params = new URLSearchParams(window.location.search);
+  const stacksParam = params.get("stacks");
+  if (stacksParam) {
+    const parsed = stacksParam
+      .split(";")
+      .map((rawStack, index) => {
+        const items = rawStack
+          .split(",")
+          .map((slug) => BY_SLUG[slug.trim()]?.rank)
+          .filter(Boolean);
+        return {
+          id: `stack-${index + 1}`,
+          color: STACK_COLORS[index % STACK_COLORS.length],
+          items,
+        };
+      })
+      .filter((stack) => stack.items.length);
+
+    if (parsed.length) return parsed;
+  }
+
+  const legacyTarget = params.get("target");
+  const legacyStack = params.get("stack");
+  if (legacyTarget || legacyStack) {
+    const legacyItems = [
+      BY_SLUG[legacyTarget]?.rank,
+      ...(legacyStack
+        ? legacyStack.split(",").map((slug) => BY_SLUG[slug.trim()]?.rank)
+        : []),
+    ].filter(Boolean);
+
+    if (legacyItems.length) {
+      const rest = cloneStacks(DEFAULT_STACKS).slice(1);
+      return [{ id: "stack-1", color: STACK_COLORS[0], items: legacyItems }, ...rest];
+    }
+  }
+
+  return cloneStacks(DEFAULT_STACKS);
 }
 
-function writeUrlState(targetId, stackIds) {
+function writeStacksState(stacks) {
   if (typeof window === "undefined") return;
-  const p = new URLSearchParams();
-  if (targetId && BY_RANK[targetId]) p.set("target", BY_RANK[targetId].slug);
-  if (stackIds.length) {
-    p.set(
-      "stack",
-      stackIds
-        .map((id) => BY_RANK[id]?.slug)
+
+  const serialized = stacks
+    .filter((stack) => stack.items.length)
+    .map((stack) =>
+      stack.items
+        .map((rank) => BY_RANK[rank]?.slug)
         .filter(Boolean)
         .join(",")
-    );
-  }
-  const qs = p.toString();
-  const url = `${window.location.pathname}${qs ? "?" + qs : ""}${window.location.hash}`;
+    )
+    .filter(Boolean)
+    .join(";");
+
+  const params = new URLSearchParams();
+  if (serialized) params.set("stacks", serialized);
+  const qs = params.toString();
+  const url = `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`;
   window.history.replaceState(null, "", url);
 }
 
 /* ---------- APP ---------- */
 export default function App() {
-  const initial = useMemo(() => readUrlState(), []);
-  const [targetId, setTargetId] = useState(initial.target);
-  const [stackIds, setStackIds] = useState(initial.stack);
-  const [shareNote, setShareNote] = useState("");
-  const [query, setQuery] = useState("");
+  const initialStacks = useMemo(() => readStacksState(), []);
+  const [stacks, setStacks] = useState(initialStacks);
+  const [activeStackId, setActiveStackId] = useState(initialStacks[0]?.id ?? null);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("rank");
+  const [drawerHeight, setDrawerHeight] = useState(300);
+  const drawerRef = useRef(null);
 
-  /* Inject Google Fonts once */
   useEffect(() => {
     if (document.getElementById("citymath-fonts")) return;
     const link = document.createElement("link");
     link.id = "citymath-fonts";
     link.rel = "stylesheet";
     link.href =
-      "https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap";
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
     document.head.appendChild(link);
   }, []);
 
-  /* Sync state → URL on every change */
   useEffect(() => {
-    writeUrlState(targetId, stackIds);
-  }, [targetId, stackIds]);
+    writeStacksState(stacks);
+  }, [stacks]);
 
-  /* Sync URL → state when user navigates back/forward */
-  useEffect(() => {
-    const onPop = () => {
-      const s = readUrlState();
-      setTargetId(s.target);
-      setStackIds(s.stack);
-    };
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
+  const maxCityPop = CITIES[0].pop;
+  const normalizedSearch = search.trim().toLowerCase();
+  const cityRows = useMemo(() => {
+    const filtered = normalizedSearch
+      ? CITIES.filter((city) =>
+          `${city.name} ${city.state} ${city.rank}`
+            .toLowerCase()
+            .includes(normalizedSearch)
+        )
+      : CITIES;
 
-  const target = targetId ? BY_RANK[targetId] : null;
-  const stack = stackIds.map((id) => BY_RANK[id]).filter(Boolean);
-  const stackSum = stack.reduce((s, c) => s + c.pop, 0);
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredCities = useMemo(() => {
-    if (!normalizedQuery) return CITIES;
-    return CITIES.filter((city) => {
-      const rank = String(city.rank);
-      return (
-        city.name.toLowerCase().includes(normalizedQuery) ||
-        city.state.toLowerCase().includes(normalizedQuery) ||
-        rank.includes(normalizedQuery)
-      );
+    return [...filtered].sort((a, b) => {
+      if (sort === "name") return a.name.localeCompare(b.name);
+      if (sort === "population") return b.pop - a.pop;
+      return a.rank - b.rank;
     });
-  }, [normalizedQuery]);
-  const resultCountLabel = normalizedQuery
-    ? `${filteredCities.length} ${filteredCities.length === 1 ? "match" : "matches"}`
-    : `${CITIES.length} cities`;
-  const hasTarget = !!target;
-  const hasStack = stack.length > 0;
-  const ready = hasTarget && hasStack;
+  }, [normalizedSearch, sort]);
 
-  const diff = ready ? stackSum - target.pop : 0;
-  const ratio = ready ? stackSum / target.pop : 0;
-  const max = Math.max(target?.pop || 0, stackSum, 1);
-  const tPct = ((target?.pop || 0) / max) * 100;
-  const sPct = (stackSum / max) * 100;
+  const visibleStacks = stacks.filter(
+    (stack) => stack.items.length || stack.id === activeStackId
+  );
+  const maxScale = getMaxScaleValue(visibleStacks);
+  const ticks = getTicks(maxScale);
 
-  const handleTargetTap = (rank) => {
-    setStackIds((ids) => ids.filter((id) => id !== rank));
-    setTargetId((prev) => (prev === rank ? null : rank));
+  const addCityToActiveStack = useCallback(
+    (rank) => {
+      setStacks((current) => {
+        let next = current;
+        let stackId = activeStackId;
+
+        if (!stackId || !current.some((stack) => stack.id === stackId)) {
+          const created = makeStack(current.length);
+          stackId = created.id;
+          next = [...current, created];
+          setActiveStackId(stackId);
+        }
+
+        return next.map((stack) => {
+          if (stack.id !== stackId) return stack;
+          const exists = stack.items.includes(rank);
+          return {
+            ...stack,
+            items: exists
+              ? stack.items.filter((item) => item !== rank)
+              : [...stack.items, rank],
+          };
+        });
+      });
+    },
+    [activeStackId]
+  );
+
+  const createStack = () => {
+    setStacks((current) => {
+      const stack = makeStack(current.length);
+      setActiveStackId(stack.id);
+      return [...current, stack];
+    });
   };
-  const handleStackTap = (rank) => {
-    if (targetId === rank) {
-      setTargetId(null);
-      setStackIds((ids) => [...ids, rank]);
-      return;
-    }
-    setStackIds((ids) =>
-      ids.includes(rank) ? ids.filter((id) => id !== rank) : [...ids, rank]
+
+  const deleteStack = (stackId) => {
+    setStacks((current) => {
+      const remaining = current.filter((stack) => stack.id !== stackId);
+      if (activeStackId === stackId) {
+        setActiveStackId(remaining[0]?.id ?? null);
+      }
+      return remaining;
+    });
+  };
+
+  const clearAll = () => {
+    const stack = makeStack(0);
+    setStacks([stack]);
+    setActiveStackId(stack.id);
+  };
+
+  const cycleSort = () => {
+    setSort((current) =>
+      current === "rank" ? "population" : current === "population" ? "name" : "rank"
     );
   };
-  const reset = () => {
-    setTargetId(DEMO.target);
-    setStackIds(DEMO.stack);
-  };
-  const clearAll = () => {
-    setTargetId(null);
-    setStackIds([]);
-  };
 
-  const share = useCallback(async () => {
-    const url = window.location.href;
-    const text = ready
-      ? `Citymath: ${target.name} vs ${stack.length} ${stack.length === 1 ? "city" : "cities"} → ${diff >= 0 ? "+" : "−"}${fmtCompact(Math.abs(diff))} (${ratio.toFixed(2)}×)`
-      : "Citymath — compare US city populations";
-    try {
-      if (navigator.share) {
-        await navigator.share({ title: "Citymath", text, url });
-        return;
-      }
-    } catch {
-      /* user cancelled — fall through to copy */
-    }
-    try {
-      await navigator.clipboard.writeText(url);
-      setShareNote("Link copied");
-    } catch {
-      setShareNote("Couldn't copy");
-    }
-    setTimeout(() => setShareNote(""), 1800);
-  }, [ready, target, stack.length, diff, ratio]);
+  const beginDrawerDrag = useCallback(
+    (event) => {
+      event.preventDefault();
+      const startY = event.clientY;
+      const startHeight = drawerHeight;
+
+      const handleMove = (moveEvent) => {
+        const panel = drawerRef.current;
+        const contentHeight = panel
+          ? Array.from(panel.children).reduce((sum, child) => {
+              const styles = window.getComputedStyle(child);
+              return (
+                sum +
+                child.getBoundingClientRect().height +
+                parseFloat(styles.marginTop || 0) +
+                parseFloat(styles.marginBottom || 0)
+              );
+            }, 0) +
+            parseFloat(window.getComputedStyle(panel).paddingTop || 0) +
+            parseFloat(window.getComputedStyle(panel).paddingBottom || 0)
+          : drawerHeight;
+        const maxHeight = Math.min(window.innerHeight - 72, contentHeight);
+        const nextHeight = startHeight + startY - moveEvent.clientY;
+        setDrawerHeight(Math.min(maxHeight, Math.max(168, nextHeight)));
+      };
+
+      const stopDrag = () => {
+        window.removeEventListener("pointermove", handleMove);
+        window.removeEventListener("pointerup", stopDrag);
+      };
+
+      window.addEventListener("pointermove", handleMove);
+      window.addEventListener("pointerup", stopDrag);
+    },
+    [drawerHeight]
+  );
 
   return (
-    <div
-      className="citymath-root"
-      style={{
-        background: C.bg,
-        color: C.ink,
-        minHeight: "100svh",
-        fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
-        WebkitFontSmoothing: "antialiased",
-        isolation: "isolate",
-      }}
-    >
-      <style>{`
-        * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
-        button, input { font-family: inherit; }
-        button { touch-action: manipulation; transition: transform .12s ease, background .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease; }
-        button:active { transform: scale(0.96); }
-        button:focus-visible, input:focus-visible { outline: 2px solid ${C.focus}; outline-offset: 3px; }
-        input::placeholder { color: ${C.muted}; opacity: .68; }
-        .display { font-family: 'Fraunces', 'Times New Roman', serif; font-feature-settings: "ss01"; }
-        .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
-        .label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 500; }
-        .scroll { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
-        .bar { transition: width .55s cubic-bezier(0.22, 1, 0.36, 1); }
-        @keyframes pop { 0% { transform: scale(.8); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
-        .pop { animation: pop .25s cubic-bezier(0.22, 1, 0.36, 1); }
-        @keyframes fadeIn { 0% { opacity: 0; transform: translateY(-4px); } 100% { opacity: 1; transform: translateY(0); } }
-        .fade-in { animation: fadeIn .25s ease; }
-        .app-shell {
-          width: min(100%, 1180px);
-          min-height: 100svh;
-          margin: 0 auto;
-          padding: 0 0 30px;
-        }
-        .summary-panel {
-          position: sticky;
-          top: 0;
-          z-index: 20;
-          padding: max(13px, env(safe-area-inset-top)) 16px 14px;
-          background: rgba(255, 253, 247, .96);
-          border-bottom: 1px solid ${C.rule};
-          box-shadow: 0 12px 32px rgba(26, 32, 29, .08);
-          backdrop-filter: blur(16px);
-        }
-        .brand-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-        }
-        .brand-mark {
-          font-size: 22px;
-          font-weight: 600;
-          letter-spacing: -0.025em;
-          white-space: nowrap;
-        }
-        .brand-subline {
-          margin-top: 2px;
-          font-size: 10px;
-          color: ${C.muted};
-        }
-        .toolbar-actions {
-          display: flex;
-          align-items: center;
-          justify-content: flex-end;
-          flex-wrap: wrap;
-          gap: 8px;
-        }
-        .tool-button {
-          min-height: 34px;
-          border: 1px solid ${C.ruleSoft};
-          background: ${C.paper};
-          border-radius: 999px;
-          padding: 0 10px;
-          cursor: pointer;
-          box-shadow: 0 1px 0 rgba(26, 32, 29, .04);
-        }
-        .tool-button-primary {
-          border-color: rgba(22, 77, 122, .24);
-          background: rgba(22, 77, 122, .07);
-        }
-        .share-note {
-          min-width: 66px;
-          text-align: right;
-          font-size: 10px;
-          color: ${C.pos};
-        }
-        .summary-grid {
-          display: grid;
-          gap: 14px;
-          margin-top: 14px;
-        }
-        .headline-block,
-        .comparison-bars,
-        .stack-block {
-          min-width: 0;
-        }
-        .comparison-bars {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-        .stack-strip {
-          display: flex;
-          gap: 7px;
-          overflow-x: auto;
-          padding: 2px 0 4px;
-          scrollbar-width: none;
-          scroll-snap-type: x proximity;
-        }
-        .stack-strip::-webkit-scrollbar { display: none; }
-        .stack-chip {
-          border: none;
-          border-radius: 999px;
-          padding: 7px 9px 7px 12px;
-          color: ${C.panel};
-          font-size: 12px;
-          font-weight: 500;
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          white-space: nowrap;
-          cursor: pointer;
-          scroll-snap-align: start;
-        }
-        .empty-stack {
-          padding: 9px 0 2px;
-          color: ${C.muted};
-          font-size: 12px;
-        }
-        .city-browser {
-          padding: 14px 14px 36px;
-        }
-        .browser-toolbar {
-          display: grid;
-          gap: 10px;
-          margin-bottom: 12px;
-        }
-        .browser-title {
-          display: flex;
-          align-items: baseline;
-          justify-content: space-between;
-          gap: 12px;
-        }
-        .count-label {
-          color: ${C.muted};
-          font-size: 11px;
-        }
-        .search-box {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          min-height: 42px;
-          border: 1px solid ${C.rule};
-          background: ${C.paper};
-          border-radius: 8px;
-          padding: 0 10px;
-        }
-        .search-prefix {
-          color: ${C.muted};
-          font-size: 10px;
-          letter-spacing: 0.14em;
-          text-transform: uppercase;
-          font-weight: 500;
-        }
-        .search-input {
-          flex: 1;
-          min-width: 0;
-          border: none;
-          outline: none;
-          background: transparent;
-          color: ${C.ink};
-          font-size: 16px;
-        }
-        .search-clear {
-          width: 28px;
-          height: 28px;
-          border: none;
-          border-radius: 999px;
-          background: ${C.ruleSoft};
-          color: ${C.muted};
-          cursor: pointer;
-          line-height: 1;
-        }
-        .legend {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-        }
-        .legend-item {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          color: ${C.muted};
-          font-size: 10px;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          font-weight: 500;
-        }
-        .legend-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 999px;
-        }
-        .city-grid {
-          display: grid;
-          gap: 0;
-          list-style: none;
-          padding: 0;
-          margin: 0;
-        }
-        .city-row {
-          border-top: 1px solid ${C.ruleSoft};
-          transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
-        }
-        .city-row:last-child {
-          border-bottom: 1px solid ${C.ruleSoft};
-        }
-        .city-row-inner {
-          min-height: 72px;
-          padding: 12px 0;
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-        .city-rank {
-          width: 24px;
-          flex-shrink: 0;
-          color: ${C.muted};
-          font-size: 11px;
-        }
-        .city-main {
-          flex: 1;
-          min-width: 0;
-        }
-        .city-title {
-          font-size: 18px;
-          font-weight: 500;
-          letter-spacing: -0.015em;
-          line-height: 1.12;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .city-state {
-          margin-left: 6px;
-          color: ${C.muted};
-          font-family: 'IBM Plex Sans', sans-serif;
-          font-size: 11px;
-          font-weight: 400;
-        }
-        .city-track {
-          position: relative;
-          height: 4px;
-          margin-top: 7px;
-          background: ${C.ruleSoft};
-          border-radius: 999px;
-          overflow: hidden;
-        }
-        .city-track-fill {
-          position: absolute;
-          inset: 0;
-          border-radius: 999px;
-          transition: background .2s ease;
-        }
-        .city-pop {
-          margin-top: 5px;
-          color: ${C.muted};
-          font-size: 11px;
-        }
-        .city-actions {
-          display: flex;
-          gap: 7px;
-          flex-shrink: 0;
-        }
-        .action-pill {
-          width: 42px;
-          height: 42px;
-          border-radius: 999px;
-          font-size: 15px;
-          font-weight: 600;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 0;
-          line-height: 1;
-        }
-        .empty-search {
-          border-top: 1px solid ${C.ruleSoft};
-          padding: 30px 4px 34px;
-          color: ${C.muted};
-        }
-        .empty-search-title {
-          color: ${C.ink};
-          font-size: 24px;
-          font-weight: 500;
-          letter-spacing: -0.02em;
-        }
-        .source-note {
-          padding: 20px 0 0;
-          color: #8D968F;
-          font-size: 9px;
-        }
-        .empty-state {
-          padding: 4px 0 2px;
-        }
-        .empty-title,
-        .target-title {
-          font-size: 32px;
-          font-weight: 500;
-          letter-spacing: -0.03em;
-          line-height: 1.05;
-        }
-        .empty-note,
-        .target-note {
-          margin-top: 8px;
-          color: ${C.muted};
-          font-size: 13px;
-          line-height: 1.4;
-        }
-        .target-meta {
-          margin-bottom: 3px;
-          color: ${C.target};
-        }
-        .headline-label {
-          color: ${C.muted};
-        }
-        .headline-measure {
-          display: flex;
-          align-items: baseline;
-          gap: 12px;
-          margin-top: 2px;
-        }
-        .headline-number {
-          font-size: clamp(42px, 12vw, 58px);
-          font-weight: 600;
-          letter-spacing: -0.045em;
-          line-height: .95;
-        }
-        .headline-ratio {
-          color: ${C.muted};
-          font-size: 14px;
-          padding-bottom: 2px;
-        }
-        .headline-detail {
-          margin-top: 4px;
-          color: ${C.muted};
-          font-size: 12px;
-        }
-        .bar-row-head {
-          display: flex;
-          justify-content: space-between;
-          align-items: baseline;
-          gap: 10px;
-          margin-bottom: 5px;
-        }
-        .bar-row-label {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          min-width: 0;
-        }
-        .bar-row-name {
-          color: ${C.muted};
-          font-size: 12px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .bar-row-value {
-          color: ${C.ink};
-          font-size: 12px;
-          font-weight: 500;
-        }
-        .bar-track {
-          position: relative;
-          height: 10px;
-          background: ${C.ruleSoft};
-          border-radius: 999px;
-          overflow: hidden;
-        }
-        .bar-fill {
-          position: absolute;
-          inset: 0;
-          border-radius: 999px;
-        }
-        @media (max-width: 430px) {
-          .brand-row { align-items: flex-start; }
-          .toolbar-actions { gap: 6px; }
-          .tool-button { min-height: 32px; padding: 0 8px; font-size: 9px; }
-          .share-note { order: 4; width: 100%; min-width: 0; margin-top: -2px; }
-          .summary-grid { gap: 12px; }
-          .city-actions { gap: 6px; }
-          .action-pill { width: 40px; height: 40px; }
-        }
-        @media (min-width: 720px) {
-          .app-shell {
-            padding: 20px 24px 52px;
-          }
-          .summary-panel {
-            top: 0;
-            padding: 17px 18px 16px;
-            border: 1px solid ${C.rule};
-            border-radius: 8px;
-          }
-          .summary-grid {
-            grid-template-columns: minmax(220px, 3fr) minmax(280px, 4fr) minmax(210px, 3fr);
-            align-items: end;
-            gap: 18px;
-          }
-          .comparison-bars {
-            padding-inline: 18px;
-            border-left: 1px solid ${C.ruleSoft};
-            border-right: 1px solid ${C.ruleSoft};
-          }
-          .stack-strip {
-            flex-wrap: wrap;
-            overflow-x: visible;
-            overflow-y: auto;
-            max-height: 88px;
-          }
-          .city-browser {
-            padding: 18px 0 48px;
-          }
-          .browser-toolbar {
-            grid-template-columns: minmax(210px, 1fr) minmax(280px, 420px) auto;
-            align-items: center;
-            gap: 16px;
-          }
-          .legend {
-            justify-content: flex-end;
-          }
-          .city-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 10px;
-          }
-          .city-row {
-            border: 1px solid ${C.ruleSoft};
-            border-radius: 8px;
-            overflow: hidden;
-            background: ${C.paper};
-          }
-          .city-row:last-child {
-            border-bottom: 1px solid ${C.ruleSoft};
-          }
-          .city-row-inner {
-            min-height: 90px;
-            padding: 14px;
-          }
-          .city-title {
-            font-size: 20px;
-          }
-        }
-        @media (min-width: 1100px) {
-          .city-grid {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-          }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          *, *::before, *::after {
-            animation-duration: .001ms !important;
-            animation-iteration-count: 1 !important;
-            scroll-behavior: auto !important;
-            transition-duration: .001ms !important;
-          }
-        }
-      `}</style>
-
+    <div className="citymath-root">
+      <style>{styles}</style>
       <main className="app-shell">
-        <section className="summary-panel" aria-live="polite">
-          <div className="brand-row">
-            <div>
-              <div className="display brand-mark">
-                City<span style={{ fontStyle: "italic", fontWeight: 400 }}>math</span>
-                <span style={{ color: C.stack, marginLeft: 2 }}>.</span>
-              </div>
-              <div className="mono brand-subline">Top 30 US city populations</div>
-            </div>
-            <div className="toolbar-actions">
-              {shareNote && <span className="mono share-note fade-in">{shareNote}</span>}
-              <button
-                onClick={share}
-                className="label tool-button tool-button-primary"
-                style={{ color: C.target }}
-                aria-label="Share this comparison"
-              >
-                Share
-              </button>
-              <button
-                onClick={clearAll}
-                className="label tool-button"
-                style={{ color: C.muted }}
-              >
-                Clear
-              </button>
-              <button
-                onClick={reset}
-                className="label tool-button"
-                style={{ color: C.ink }}
-              >
-                Reset
-              </button>
-            </div>
-          </div>
+        <Header onClearAll={clearAll} />
 
-          <div className="summary-grid">
-            <div className="headline-block">
-              {!hasTarget ? (
-                <EmptyState
-                  title="Pick a target city"
-                  note="Build a stack and watch the comparison update as you browse."
-                />
-              ) : !hasStack ? (
-                <TargetOnly target={target} />
-              ) : (
-                <ComparisonHeadline
-                  targetName={target.name}
-                  diff={diff}
-                  ratio={ratio}
-                />
-              )}
-            </div>
+        <div className="workspace" style={{ "--drawer-height": `${drawerHeight}px` }}>
+          <CityList
+            cities={cityRows}
+            maxCityPop={maxCityPop}
+            search={search}
+            sort={sort}
+            onSearch={setSearch}
+            onSort={cycleSort}
+            onAddCity={addCityToActiveStack}
+          />
 
-            <div className="comparison-bars">
-              {hasTarget ? (
-                <>
-                  <BarRow
-                    caption="Target"
-                    label={target.name}
-                    value={target.pop}
-                    pct={tPct}
-                    color={C.target}
-                    accentColor={C.target}
-                  />
-                  <BarRow
-                    caption="Stack"
-                    label={
-                      hasStack
-                        ? `${stack.length} ${stack.length === 1 ? "city" : "cities"}`
-                        : "empty"
-                    }
-                    value={stackSum}
-                    pct={sPct}
-                    color={C.stack}
-                    accentColor={C.stack}
-                    empty={!hasStack}
-                  />
-                </>
-              ) : (
-                <div className="empty-stack mono">No target selected</div>
-              )}
-            </div>
-
-            <div className="stack-block">
-              <div className="label" style={{ color: C.stack, marginBottom: 6 }}>
-                Stack
-              </div>
-              {hasStack ? (
-                <div className="stack-strip" aria-label="Selected stack cities">
-                  {stack.map((c) => (
-                    <button
-                      key={c.rank}
-                      onClick={() => handleStackTap(c.rank)}
-                      className="stack-chip pop"
-                      style={{ background: C.stack }}
-                      aria-label={`Remove ${c.name} from stack`}
-                    >
-                      <span>{c.name}</span>
-                      <span style={{ opacity: 0.72, fontSize: 14, lineHeight: 1 }}>×</span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="empty-stack mono">No stack cities selected</div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="city-browser" aria-label="City browser">
-          <div className="browser-toolbar">
-            <div className="browser-title">
-              <span className="label" style={{ color: C.muted }}>
-                Top 30 US Cities · 2024
-              </span>
-              <span className="mono count-label">{resultCountLabel}</span>
-            </div>
-
-            <div className="search-box">
-              <label className="search-prefix" htmlFor="city-search">
-                Find
-              </label>
-              <input
-                id="city-search"
-                className="search-input"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="City, state, or rank"
-                autoComplete="off"
-              />
-              {query && (
-                <button
-                  type="button"
-                  className="search-clear"
-                  onClick={() => setQuery("")}
-                  aria-label="Clear search"
-                >
-                  ×
-                </button>
-              )}
-            </div>
-
-            <div className="legend" aria-label="Selection legend">
-              <span className="legend-item">
-                <span className="legend-dot" style={{ background: C.target }} />
-                Target
-              </span>
-              <span className="legend-item">
-                <span className="legend-dot" style={{ background: C.stack }} />
-                Stack
-              </span>
-            </div>
-          </div>
-
-          {filteredCities.length ? (
-            <ul className="city-grid" role="list">
-              {filteredCities.map((city) => {
-                const isTarget = targetId === city.rank;
-                const isStacked = stackIds.includes(city.rank);
-                const widthPct = (city.pop / CITIES[0].pop) * 100;
-                return (
-                  <li
-                    key={city.rank}
-                    className="city-row"
-                    style={{
-                      background: isTarget
-                        ? "rgba(22, 77, 122, 0.08)"
-                        : isStacked
-                        ? "rgba(200, 77, 43, 0.08)"
-                        : C.paper,
-                      borderColor: isTarget
-                        ? "rgba(22, 77, 122, 0.22)"
-                        : isStacked
-                        ? "rgba(200, 77, 43, 0.22)"
-                        : C.ruleSoft,
-                    }}
-                  >
-                    <div className="city-row-inner">
-                      <span className="mono city-rank">
-                        {String(city.rank).padStart(2, "0")}
-                      </span>
-
-                      <div className="city-main">
-                        <div className="display city-title">
-                          {city.name}
-                          <span className="city-state">{city.state}</span>
-                        </div>
-                        <div className="city-track">
-                          <div
-                            className="city-track-fill"
-                            style={{
-                              width: `${widthPct}%`,
-                              background: isTarget
-                                ? C.target
-                                : isStacked
-                                ? C.stack
-                                : C.trackFill,
-                            }}
-                          />
-                        </div>
-                        <div className="mono city-pop">{fmt(city.pop)}</div>
-                      </div>
-
-                      <div className="city-actions">
-                        <ActionPill
-                          active={isTarget}
-                          activeBg={C.target}
-                          activeFg={C.panel}
-                          idleFg={C.target}
-                          onTap={() => handleTargetTap(city.rank)}
-                          label="T"
-                          ariaLabel={`Set ${city.name} as target`}
-                        />
-                        <ActionPill
-                          active={isStacked}
-                          activeBg={C.stack}
-                          activeFg={C.panel}
-                          idleFg={C.stack}
-                          onTap={() => handleStackTap(city.rank)}
-                          label={isStacked ? "✓" : "+"}
-                          ariaLabel={`Add ${city.name} to stack`}
-                        />
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <div className="empty-search">
-              <div className="display empty-search-title">No city matches</div>
-              <div style={{ marginTop: 8, fontSize: 14 }}>Try a city name, state abbreviation, or rank.</div>
-            </div>
-          )}
-
-          <div className="label source-note">
-            Source · U.S. Census Bureau, July 2024 estimates
-          </div>
-        </section>
+          <StackComparison
+            stacks={visibleStacks}
+            activeStackId={activeStackId}
+            maxScale={maxScale}
+            ticks={ticks}
+            drawerHeight={drawerHeight}
+            drawerRef={drawerRef}
+            onCreateStack={createStack}
+            onDeleteStack={deleteStack}
+            onSetActive={setActiveStackId}
+            onDrawerDrag={beginDrawerDrag}
+          />
+        </div>
       </main>
     </div>
   );
 }
 
-/* ---------- SUB-COMPONENTS ---------- */
+function Header({ onClearAll }) {
+  const scrollTo = (id) => {
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
-function ActionPill({ active, activeBg, activeFg, idleFg, onTap, label, ariaLabel }) {
   return (
-    <button
-      onClick={onTap}
-      className="action-pill"
-      aria-label={ariaLabel}
-      title={ariaLabel}
-      style={{
-        border: active ? "none" : `1px solid ${C.rule}`,
-        background: active ? activeBg : "transparent",
-        color: active ? activeFg : idleFg,
-      }}
+    <header className="topbar">
+      <button className="brand" onClick={() => scrollTo("cities")} aria-label="Go to cities">
+        Citymath<span>.</span>
+      </button>
+      <div className="top-actions">
+        <button className="text-action desktop-only" onClick={onClearAll}>
+          Clear all
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function CityList({
+  cities,
+  maxCityPop,
+  search,
+  sort,
+  onSearch,
+  onSort,
+  onAddCity,
+}) {
+  const panelRef = useRef(null);
+  const searchRef = useRef(null);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    const searchEl = searchRef.current;
+    if (!panel || !searchEl) return;
+
+    const setInitialStop = () => {
+      if (window.matchMedia("(max-width: 599px)").matches && !search) {
+        panel.scrollTop = searchEl.offsetHeight;
+      }
+    };
+
+    const frame = window.requestAnimationFrame(setInitialStop);
+    return () => window.cancelAnimationFrame(frame);
+  }, [search]);
+
+  return (
+    <section className="city-panel" id="cities" aria-labelledby="city-list-title" ref={panelRef}>
+      <div className="search-reveal" ref={searchRef}>
+        <SearchField value={search} onChange={onSearch} />
+      </div>
+
+      <div className="section-heading">
+        <h2 id="city-list-title">Top US Cities</h2>
+        <button className="sort-button" onClick={onSort}>
+          Sort
+          <span className="sr-only">Current sort: {sort}</span>
+        </button>
+      </div>
+
+      <ul className="city-list" role="list">
+        {cities.map((city) => (
+          <CityRow
+            key={city.rank}
+            city={city}
+            pct={(city.pop / maxCityPop) * 100}
+            onAdd={() => onAddCity(city.rank)}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function SearchField({ value, onChange }) {
+  return (
+    <label className="search-field">
+      <span className="search-icon small" aria-hidden="true" />
+      <span className="sr-only">Search cities</span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Search cities"
+        autoComplete="off"
+      />
+    </label>
+  );
+}
+
+function CityRow({ city, pct, onAdd }) {
+  return (
+    <li>
+      <div className="city-row">
+        <span className="city-rank" aria-label={`Population rank ${city.rank}`}>
+          {city.rank}
+        </span>
+        <button className="city-name" onClick={onAdd}>
+          {city.name}, {city.state}
+        </button>
+        <div className="city-mini-track" aria-hidden="true">
+          <div
+            className="city-mini-bar"
+            style={{ width: `${pct}%`, backgroundColor: city.color }}
+          />
+        </div>
+        <span className="city-pop">{fmtCompact(city.pop)}</span>
+        <button className="add-button" onClick={onAdd} aria-label={`Add ${city.name} to active stack`}>
+          +
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function StackComparison({
+  stacks,
+  activeStackId,
+  maxScale,
+  ticks,
+  drawerHeight,
+  drawerRef,
+  onCreateStack,
+  onDeleteStack,
+  onSetActive,
+  onDrawerDrag,
+}) {
+  return (
+    <section
+      className="stack-panel"
+      id="stacks"
+      aria-labelledby="stack-title"
+      ref={drawerRef}
+      style={{ "--drawer-height": `${drawerHeight}px` }}
     >
-      {label}
-    </button>
+      <button className="drawer-handle" onPointerDown={onDrawerDrag} aria-label="Resize stacks drawer">
+        <span aria-hidden="true" />
+      </button>
+      <div className="stack-heading">
+        <h2 id="stack-title">Compare Stacks</h2>
+        <div className="stack-actions">
+          <button className="new-stack-button" onClick={onCreateStack}>
+            + New stack
+          </button>
+        </div>
+      </div>
+
+      <div
+        className="stack-chart"
+        style={{ "--stack-count": stacks.length }}
+      >
+        <StackGuides ticks={ticks} />
+        <div className="stack-rows">
+          {stacks.map((stack, index) => (
+            <StackRow
+              key={stack.id}
+              stack={stack}
+              stackIndex={index}
+              active={stack.id === activeStackId}
+              maxScale={maxScale}
+              onDelete={() => onDeleteStack(stack.id)}
+              onSetActive={() => onSetActive(stack.id)}
+            />
+          ))}
+        </div>
+        <StackScale ticks={ticks} />
+      </div>
+    </section>
   );
 }
 
-function EmptyState({ title, note }) {
+function StackGuides({ ticks }) {
   return (
-    <div className="empty-state">
-      <div className="display empty-title">
-        {title}
-        <span style={{ color: C.target, marginLeft: 4 }}>↓</span>
-      </div>
-      <div className="empty-note">{note}</div>
+    <div className="stack-guides" aria-hidden="true">
+      {ticks.map((tick) => (
+        <span key={tick.value} style={{ left: `${tick.percent}%` }} />
+      ))}
     </div>
   );
 }
 
-function TargetOnly({ target }) {
+function StackRow({ stack, stackIndex, active, maxScale, onDelete, onSetActive }) {
+  const cities = stack.items.map((rank) => BY_RANK[rank]).filter(Boolean);
+  const total = cities.reduce((sum, city) => sum + city.pop, 0);
+  const segments = cities.map((city, index) => {
+    const width = Math.max((city.pop / maxScale) * 100, 1.2);
+    return {
+      city,
+      index,
+      width,
+    };
+  });
+  const cityList = cities.map((city) => city.name).join(", ");
+  const summary = cities.length
+    ? `Stack total ${fmtStack(total)}: ${cities
+        .map((city) => `${city.name} ${fmtCompact(city.pop)}`)
+        .join(", ")}.`
+    : "Empty active stack.";
+
   return (
-    <div>
-      <div className="label target-meta">
-        Target · {target.state}
+    <article className={`stack-row ${active ? "active" : ""}`} aria-label={summary}>
+      <button
+        className="stack-dot-button"
+        onClick={onSetActive}
+        aria-label={`Make stack ${stackIndex + 1} active`}
+      >
+        <span className="stack-dot" style={{ backgroundColor: stack.color }} />
+      </button>
+
+      <div className="stack-main">
+        <div className="stack-track">
+          {segments.map(({ city, index, width }) => {
+            return (
+              <div
+                key={`${stack.id}-${city.rank}-${index}`}
+                className="stack-segment"
+                title={`${city.name}, ${city.state} - ${fmtCompact(city.pop)}`}
+                style={{
+                  flexBasis: `${width}%`,
+                  backgroundColor: city.color,
+                }}
+              />
+            );
+          })}
+        </div>
+
+        <div className="stack-labels">
+          {cities.length ? (
+            <div className="stack-city-list">{cityList}</div>
+          ) : (
+            <div className="empty-stack-label">Add a city to this stack</div>
+          )}
+        </div>
       </div>
-      <div className="display target-title">{target.name}</div>
-      <div className="mono target-note">
-        {fmt(target.pop)} people
-      </div>
-      <div className="mono" style={{ color: C.stack, fontSize: 12, marginTop: 10 }}>
-        Stack is empty
-      </div>
+
+      <span className="stack-total">{fmtStack(total)}</span>
+      <button className="remove-stack" onClick={onDelete} aria-label={`Remove stack ${stackIndex + 1}`}>
+        x
+      </button>
+    </article>
+  );
+}
+
+function StackScale({ ticks }) {
+  return (
+    <div className="stack-scale" aria-hidden="true">
+      {ticks.map((tick) => (
+        <span key={tick.value} style={{ left: `${tick.percent}%` }}>
+          {fmtTick(tick.value)}
+        </span>
+      ))}
     </div>
   );
 }
 
-function ComparisonHeadline({ targetName, diff, ratio }) {
-  const beats = diff >= 0;
-  return (
-    <div>
-      <div className="label headline-label">
-        Stack {beats ? "beats" : "trails"} {targetName} by
-      </div>
-      <div className="headline-measure">
-        <span
-          className="display headline-number"
-          style={{ color: beats ? C.pos : C.neg }}
-        >
-          {beats ? "+" : "−"}
-          {fmtCompact(Math.abs(diff))}
-        </span>
-        <span className="mono headline-ratio">
-          {ratio.toFixed(2)}×
-        </span>
-      </div>
-      <div className="mono headline-detail">
-        {fmt(Math.abs(diff))} {beats ? "more" : "fewer"} people
-      </div>
-    </div>
-  );
+function getStackTotal(stack) {
+  return stack.items.reduce((sum, rank) => sum + (BY_RANK[rank]?.pop ?? 0), 0);
 }
 
-function BarRow({ caption, label, value, pct, color, accentColor, empty }) {
-  return (
-    <div>
-      <div className="bar-row-head">
-        <span className="bar-row-label">
-          <span
-            className="label"
-            style={{ color: accentColor, fontSize: 9, fontWeight: 600 }}
-          >
-            {caption}
-          </span>
-          <span className="bar-row-name">{label}</span>
-        </span>
-        <span className="mono bar-row-value">
-          {value.toLocaleString()}
-        </span>
-      </div>
-      <div className="bar-track">
-        <div
-          className="bar bar-fill"
-          style={{
-            width: `${empty ? 0 : pct}%`,
-            background: color,
-          }}
-        />
-      </div>
-    </div>
-  );
+function getMaxScaleValue(stacks) {
+  const maxTotal = Math.max(1, ...stacks.map(getStackTotal));
+  return maxTotal;
 }
+
+function getTicks(max) {
+  const step = 2_000_000;
+  const tickCount = Math.floor(max / step);
+  const ticks = Array.from({ length: tickCount + 1 }, (_, index) => {
+    const value = index * step;
+    return {
+      value,
+      percent: (value / max) * 100,
+    };
+  });
+
+  const lastTick = ticks[ticks.length - 1]?.value ?? 0;
+  if (max - lastTick > max * 0.03) {
+    if (max - lastTick < step * 0.6) {
+      ticks.pop();
+    }
+    ticks.push({ value: max, percent: 100 });
+  }
+
+  return ticks;
+}
+
+function fmtTick(n) {
+  if (n === 0) return "0";
+  return `${Math.round(n / 1_000_000)}M`;
+}
+
+function makeStack(index) {
+  return {
+    id: `stack-${Date.now()}-${index}`,
+    color: STACK_COLORS[index % STACK_COLORS.length],
+    items: [],
+  };
+}
+
+const styles = `
+  :root {
+    color-scheme: light;
+  }
+
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html {
+    background: ${C.bg};
+  }
+
+  body {
+    margin: 0;
+    background: ${C.bg};
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+
+  button {
+    color: inherit;
+  }
+
+  button:focus-visible,
+  input:focus-visible {
+    outline: 2px solid ${C.focus};
+    outline-offset: 3px;
+  }
+
+  .citymath-root {
+    min-height: 100svh;
+    background:
+      radial-gradient(circle at 18% 0%, rgba(15, 59, 120, 0.05), transparent 26rem),
+      ${C.bg};
+    color: ${C.ink};
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    isolation: isolate;
+  }
+
+  .app-shell {
+    height: 100svh;
+    min-height: 100svh;
+    overflow: hidden;
+    margin: 0 auto;
+    background: ${C.panel};
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: stretch;
+    gap: 28px;
+    min-height: 64px;
+    padding: 0 28px;
+    border-bottom: 1px solid ${C.line};
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(18px);
+  }
+
+  .brand {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.055em;
+    text-align: left;
+  }
+
+  .brand span {
+    color: #DD2C16;
+  }
+
+  .top-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 22px;
+  }
+
+  .text-action,
+  .new-stack-button,
+  .sort-button {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    color: ${C.muted};
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 13px;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  .new-stack-button {
+    color: ${C.action};
+    font-size: 15px;
+  }
+
+  .search-icon.small {
+    width: 15px;
+    height: 15px;
+    border-color: ${C.muted};
+    border-width: 1.5px;
+  }
+
+  .search-icon.small::after {
+    width: 7px;
+    height: 1.5px;
+    right: -6px;
+    bottom: -3px;
+    background: ${C.muted};
+  }
+
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
+    height: calc(100svh - 64px);
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .city-panel {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-right: 1px solid ${C.line};
+    padding: 34px 34px 42px;
+    scrollbar-width: thin;
+  }
+
+  .search-reveal {
+    margin-bottom: 34px;
+  }
+
+  .search-field {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-height: 42px;
+    color: ${C.muted};
+  }
+
+  .search-field input {
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    color: ${C.ink};
+    font-size: 16px;
+    outline: none;
+  }
+
+  .search-field input::placeholder {
+    color: ${C.muted};
+  }
+
+  .section-heading,
+  .stack-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 28px;
+  }
+
+  .section-heading h2,
+  .stack-heading h2 {
+    margin: 0;
+    color: ${C.muted};
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  .stack-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 18px;
+  }
+
+  .drawer-handle {
+    display: none;
+    width: 100%;
+    height: 24px;
+    margin: -12px 0 8px;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    cursor: ns-resize;
+    touch-action: none;
+  }
+
+  .drawer-handle span {
+    display: block;
+    width: 54px;
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(89, 97, 116, 0.28);
+  }
+
+  .city-list {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .city-row {
+    display: grid;
+    grid-template-columns: 22px minmax(112px, 1fr) 88px 48px 24px;
+    align-items: center;
+    column-gap: 10px;
+    min-height: 46px;
+  }
+
+  .city-rank {
+    color: ${C.faint};
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .city-name {
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    overflow: hidden;
+    padding: 0;
+    color: ${C.ink};
+    font-size: 15px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .city-mini-track {
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.06);
+  }
+
+  .city-mini-bar {
+    height: 100%;
+    min-width: 10px;
+    border-radius: 999px;
+    transition: width 180ms ease;
+  }
+
+  .city-pop,
+  .stack-total {
+    color: ${C.ink};
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+  }
+
+  .city-pop {
+    color: ${C.muted};
+    font-size: 14px;
+  }
+
+  .add-button,
+  .remove-stack {
+    position: relative;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    color: ${C.muted};
+    font-size: 24px;
+    line-height: 1;
+  }
+
+  .remove-stack {
+    font-size: 18px;
+  }
+
+  .add-button::after,
+  .remove-stack::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 48px;
+    height: 48px;
+    transform: translate(-50%, -50%);
+  }
+
+  .stack-panel {
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 34px 48px 52px;
+    scrollbar-width: thin;
+  }
+
+  .stack-chart {
+    position: relative;
+    height: max(420px, calc(var(--stack-count) * 86px + 160px));
+    padding: 48px 0 68px;
+  }
+
+  .stack-guides {
+    position: absolute;
+    top: 42px;
+    right: 118px;
+    bottom: 62px;
+    left: 52px;
+    pointer-events: none;
+  }
+
+  .stack-guides span {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed ${C.line};
+  }
+
+  .stack-rows {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    gap: 58px;
+  }
+
+  .stack-row {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) 76px 34px;
+    align-items: start;
+    gap: 24px;
+  }
+
+  .stack-row.active .stack-dot {
+    box-shadow: 0 0 0 5px rgba(23, 105, 224, 0.10);
+  }
+
+  .stack-dot-button {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .stack-dot {
+    display: block;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+  }
+
+  .stack-main {
+    min-width: 0;
+  }
+
+  .stack-track {
+    display: flex;
+    width: 100%;
+    height: 20px;
+    overflow: hidden;
+    border-radius: 4px;
+  }
+
+  .stack-segment {
+    min-width: 3px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    transition: flex-basis 180ms ease;
+  }
+
+  .stack-labels {
+    min-height: 24px;
+    margin-top: 12px;
+  }
+
+  .stack-city-list {
+    color: ${C.ink};
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .empty-stack-label {
+    color: ${C.faint};
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 14px;
+  }
+
+  .stack-total {
+    padding-top: 1px;
+    font-size: 15px;
+  }
+
+  .stack-scale {
+    position: absolute;
+    right: 118px;
+    bottom: 18px;
+    left: 52px;
+    height: 24px;
+    pointer-events: none;
+  }
+
+  .stack-scale span {
+    position: absolute;
+    top: 0;
+    color: ${C.muted};
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 13px;
+    transform: translateX(-50%);
+  }
+
+  .stack-scale span:first-child {
+    transform: translateX(0);
+  }
+
+  .stack-scale span:last-child {
+    transform: translateX(-100%);
+  }
+
+  .desktop-only {
+    display: inline-flex;
+  }
+
+  .mobile-only {
+    display: none;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    clip-path: inset(50%);
+  }
+
+  @media (min-width: 1180px) {
+    .app-shell {
+      max-width: 1600px;
+    }
+
+    .workspace {
+      grid-template-columns: 486px minmax(0, 1fr);
+    }
+  }
+
+  @media (min-width: 600px) and (max-width: 1179px) {
+    .topbar {
+      min-height: 58px;
+      padding: 0 24px;
+    }
+
+    .workspace {
+      height: calc(100svh - 58px);
+      grid-template-columns: 300px minmax(0, 1fr);
+    }
+
+    .city-panel {
+      padding: 30px 24px 40px;
+    }
+
+    .city-row {
+      grid-template-columns: 20px minmax(92px, 1fr) 58px 40px 22px;
+      column-gap: 8px;
+    }
+
+    .city-name {
+      font-size: 14px;
+    }
+
+    .city-pop {
+      font-size: 13px;
+    }
+
+    .stack-panel {
+      padding: 30px 22px 46px;
+    }
+
+    .stack-chart {
+      height: max(390px, calc(var(--stack-count) * 82px + 150px));
+      padding-top: 42px;
+    }
+
+    .stack-guides {
+      top: 36px;
+      right: 68px;
+      bottom: 58px;
+      left: 38px;
+    }
+
+    .stack-rows {
+      gap: 48px;
+    }
+
+    .stack-row {
+      grid-template-columns: 24px minmax(0, 1fr) 50px 22px;
+      gap: 10px;
+    }
+
+    .stack-total {
+      font-size: 14px;
+    }
+
+    .stack-city-list {
+      font-size: 12px;
+    }
+
+    .stack-scale {
+      right: 68px;
+      left: 38px;
+    }
+  }
+
+  @media (max-width: 599px) {
+    .topbar {
+      min-height: 58px;
+      padding: 0 clamp(16px, 4vw, 22px);
+    }
+
+    .app-shell {
+      height: 100svh;
+      overflow: hidden;
+    }
+
+    .workspace {
+      grid-template-columns: 1fr;
+      height: calc(100svh - 58px);
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .city-panel {
+      height: 100%;
+      overflow-y: auto;
+      scroll-snap-type: y proximity;
+      border-right: 0;
+      border-bottom: 1px solid ${C.line};
+      padding-right: clamp(16px, 4vw, 22px);
+      padding-left: clamp(16px, 4vw, 22px);
+      padding-bottom: calc(var(--drawer-height) + 18px);
+    }
+
+    .search-reveal {
+      display: flex;
+      min-height: 58px;
+      align-items: center;
+      margin: 0;
+      scroll-snap-align: start;
+    }
+
+    .section-heading {
+      scroll-snap-align: start;
+    }
+
+    .stack-panel {
+      position: fixed;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 15;
+      height: min(var(--drawer-height), calc(100svh - 76px));
+      max-height: calc(100svh - 76px);
+      overflow-y: auto;
+      border-top: 1px solid ${C.line};
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 -18px 54px rgba(15, 23, 42, 0.10);
+      padding: 16px clamp(16px, 4vw, 22px) 14px;
+    }
+
+    .drawer-handle {
+      display: grid;
+    }
+  }
+
+  @media (max-width: 599px) {
+    .topbar {
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      min-height: 64px;
+      padding: 0 clamp(14px, 4vw, 18px);
+    }
+
+    .brand {
+      font-size: 24px;
+    }
+
+    .top-actions {
+      gap: 14px;
+    }
+
+    .city-panel {
+      padding: 22px clamp(14px, 4vw, 18px) 0;
+      padding-bottom: calc(var(--drawer-height) + 18px);
+    }
+
+    .section-heading {
+      margin-bottom: 22px;
+    }
+
+    .city-list {
+      border-bottom: 1px solid ${C.line};
+      max-height: none;
+      overflow: visible;
+    }
+
+    .city-list::-webkit-scrollbar {
+      display: none;
+    }
+
+    .city-row {
+      grid-template-columns: 20px minmax(104px, 1fr) 62px 48px 22px;
+      column-gap: 8px;
+      min-height: 64px;
+      border-bottom: 1px solid ${C.lineSoft};
+    }
+
+    .city-rank {
+      font-size: 12px;
+    }
+
+    .city-name {
+      font-size: 16px;
+    }
+
+    .city-pop {
+      font-size: 15px;
+    }
+
+    .stack-panel {
+      padding: 14px clamp(14px, 4vw, 18px) 12px;
+    }
+
+    .stack-heading {
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .stack-actions {
+      align-items: flex-end;
+      gap: 12px;
+    }
+
+    .stack-chart {
+      height: max(210px, calc(var(--stack-count) * 50px + 78px));
+      padding: 10px 0 28px;
+    }
+
+    .stack-guides {
+      top: 10px;
+      right: 34px;
+      bottom: 28px;
+      left: 36px;
+    }
+
+    .stack-rows {
+      gap: 14px;
+    }
+
+    .stack-row {
+      grid-template-columns: 26px minmax(0, 1fr) 54px 22px;
+      gap: 8px;
+    }
+
+    .stack-track {
+      height: 14px;
+    }
+
+    .stack-labels {
+      min-height: 20px;
+      margin-top: 7px;
+    }
+
+    .stack-city-list {
+      font-size: 12px;
+    }
+
+    .stack-total {
+      font-size: 15px;
+    }
+
+    .stack-scale {
+      right: 34px;
+      bottom: 2px;
+      left: 36px;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .app-shell {
+      min-height: 100svh;
+    }
+
+    .city-row {
+      grid-template-columns: 18px minmax(98px, 1fr) 56px 44px 22px;
+    }
+
+    .city-name {
+      font-size: 15px;
+    }
+
+    .city-pop {
+      font-size: 14px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 1ms !important;
+    }
+  }
+`;

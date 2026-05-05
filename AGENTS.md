@@ -2,7 +2,7 @@
 
 ## What This Repo Is
 
-Citymath is a mobile-first React/Vite single-page app for comparing populations of large US cities. A user chooses one target city, stacks one or more other cities, and the app shows whether the stacked population beats or trails the target.
+Citymath is a mobile-first React/Vite single-page app for comparing populations of large US cities. A user adds cities to unnamed stacks, and the app compares those stack totals on one shared horizontal scale.
 
 The live site is intended for GitHub Pages at:
 
@@ -13,17 +13,17 @@ https://corychainsman.github.io/citymath/
 - The app compares the top 30 incorporated US cities by July 2024 population estimate.
 - City data is hardcoded in `src/App.jsx`; there is no backend, API call, database, or generated data file.
 - URL query parameters are the sharing mechanism:
-  - `target=<city-slug>` chooses the target city.
-  - `stack=<city-slug>,<city-slug>` chooses the stack.
+  - `stacks=<city-slug>,<city-slug>;<city-slug>` encodes unnamed stacks.
+  - Legacy `target=<city-slug>` and `stack=<city-slug>,<city-slug>` links are accepted and converted into the new stack format.
 - Unknown slugs are silently ignored.
-- The default/demo state is New York as the target and Los Angeles plus Houston as the stack.
+- The default state shows five sample stacks for visual comparison.
 
 ## Tech Stack
 
 - Vite
 - React 18
 - `@vitejs/plugin-react`
-- Inline styles in React components
+- CSS injected from `src/App.jsx`
 - Google Fonts injected at runtime from `src/App.jsx`
 - No CSS framework
 - No test runner currently configured
@@ -70,7 +70,7 @@ For verification, `npm run build` is the main check available unless a test runn
 - Preserve URL-shareable state when changing comparison behavior.
 - Be careful when editing city slugs or city names; shared links depend on slug values.
 - If updating city data, update the source note in the UI and README if the source or date changes.
-- Match the existing compact, mobile-first visual style. Most styling currently lives inline in `src/App.jsx`.
+- Match the existing compact, mobile-first visual style. Styling currently lives in the injected CSS string in `src/App.jsx`.
 - Avoid broad refactors unless they directly support the requested change; the app is intentionally small.
 
 ## Deployment Notes
